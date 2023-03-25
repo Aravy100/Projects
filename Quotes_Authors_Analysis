@@ -1,0 +1,367 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Mar 22 22:17:42 2023
+
+@author: Aravindh Saravanan
+"""
+
+# Importing packages
+import pandas as pd
+import random
+import numpy as np
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import CountVectorizer,TfidfVectorizer
+from sklearn.decomposition import NMF, LatentDirichletAllocation, TruncatedSVD
+from nltk.corpus import stopwords
+from sklearn.model_selection import train_test_split
+import seaborn as sns
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import accuracy_score
+from sklearn.tree import DecisionTreeClassifier
+from sklearn import tree
+
+# Reading in data as a CSV
+data = pd.read_csv(r"C:\Users\17207\Downloads\Quotes_Large.csv")
+# Take a sample from the large dataset
+sample = data.sample(frac=0.1, random_state=10)
+sample = pd.DataFrame(sample.reset_index(drop=True))
+
+# Make sure all the columns are of STRING datatype
+sample['quote']= sample['quote'].astype(str)
+sample['author']= sample['author'].astype(str)
+sample['category']= sample['category'].astype(str)
+
+# Create author column by using comma as a separator
+new_author = sample.author.str.split(",", expand=False).str[0]
+# The previous value is a string, convert this to a dataframe column
+sample['new_author'] = new_author
+# Some author names have garbage strings that start with space, remove all of these
+sample['new_author_clean_flag']=sample['new_author'].apply(lambda x: 'True' if str(x).startswith(" ") else 'False')
+# Get the count of each author to see which ones are among the most popular
+sample.groupby(['new_author_clean_flag'])['new_author_clean_flag'].count()
+# Replace these 699 or so with null or na
+# Creating a function that does will enable to delete the cell if starting is space
+def delete_cell(x):
+     if str(x).startswith(" ") == True:
+          return np.nan
+     else:
+          return x
+# Applying the above function to the cleaned up author column
+sample['new_author'] = sample['new_author'].apply(lambda x: delete_cell(x))
+
+# Get the top authors and store it separately
+Top_Authors = pd.DataFrame(sample.groupby(['new_author'])['new_author'].count().sort_values(ascending=False))
+
+
+# Clean up the Category column to get the labels
+# Make sure every character is either lowercase or uppercase English letters
+sample['category']= sample['category'].str.replace('[^a-zA-Z ]', ' ')
+sample['category']= sample['category'].str.lower()
+# Remove all stopwords - Stopwords also include our label words 
+stop = stopwords.words('english') + ['quote', 'quotes']
+sample['category'] = sample['category'].apply(lambda x: ' '.join([word for word in x.split() if word not in (stop)]))
+# Remove words of length < 4
+sample['category'] = sample['category'].apply(lambda x: ' '.join([word for word in x.split() if len(word)>=4]))
+# Remove the leading spaces if any
+sample['category'] = sample['category'].apply(lambda x: x.strip())
+
+# Clean up the quotes column just like the above
+# Make sure every character is either lowercase or uppercase English letters
+sample['quote']= sample['quote'].str.replace('[^a-zA-Z ]', ' ')
+sample['quote']= sample['quote'].str.lower()
+# Remove words of length < 4
+sample['quote'] = sample['quote'].apply(lambda x: ' '.join([word for word in x.split() if len(word)>=4]))
+# Remove the leading spaces if any
+sample['quote'] = sample['quote'].apply(lambda x: x.strip())
+
+
+# 1. LDA Approach
+vectorizer = CountVectorizer(input="content",lowercase=True,max_features=5000)          # Initiate Count Vectorizer object
+content_list = sample['category'].tolist() # Convert dataframe column to a list
+vec_matrix = vectorizer.fit_transform(content_list)
+vec_array = vec_matrix.toarray()
+count_vectorized_df = pd.DataFrame(vec_array, columns=vectorizer.get_feature_names_out())
+
+# Set the number of topics
+num_topics = 4
+# Input data frame for LDA
+lda_input_df = count_vectorized_df
+# Instantiate the LDA model with 100 iterations and 5 topics
+lda_model_DH = LatentDirichletAllocation(n_components=num_topics, 
+                                         max_iter=100, learning_method='online')
+LDA_DH_Model = lda_model_DH.fit_transform(lda_input_df)
+
+# Get the matrix of values which can then be used to obtain top 15 words for each topic
+word_topic = np.array(lda_model_DH.components_)
+word_topic = word_topic.transpose()
+num_top_words = 15
+vocab = vectorizer.get_feature_names_out() 
+vocab_array = np.asarray(vocab)
+
+# Plot the top 15 words under each topic using matplotlib
+fontsize_base = 8
+for t in range(num_topics):
+    plt.subplot(1, num_topics, t + 1)  # plot numbering starts with 1
+    plt.ylim(0, num_top_words + 2)  # stretch the y-axis to accommodate the words
+    plt.xticks([])  # remove x-axis markings ('ticks')
+    plt.yticks([]) # remove y-axis markings ('ticks')
+    plt.title('Topic #{}'.format(t))
+    top_words_idx = np.argsort(word_topic[:,t])[::-1]  # descending order
+    top_words_idx = top_words_idx[:num_top_words]
+    top_words = vocab_array[top_words_idx]
+    top_words_shares = word_topic[top_words_idx, t]
+    for i, (word, share) in enumerate(zip(top_words, top_words_shares)):
+        plt.text(0.3, num_top_words-i-0.5, word, fontsize=fontsize_base)
+                 ##fontsize_base*share)
+plt.tight_layout()
+plt.show()
+
+# Take the matrix of topic probabilities and use it to arrive at new labels
+word_topic_df=pd.DataFrame(word_topic)
+new_topic_label = pd.DataFrame(word_topic_df.idxmax(axis='columns'))
+new_topic_label.rename(columns = {0:'label_no'}, inplace=True)
+# Convert the label numbers to text labels
+new_topic_label['label'] = np.where(new_topic_label['label_no']==0,'love',
+                            np.where(new_topic_label['label_no']==1,'inspirational',
+                            np.where(new_topic_label['label_no']==2,'humor',
+                            np.where(new_topic_label['label_no']==3,'poetry',''))))
+# Assign the new label to the original dataframe
+sample['new_label'] = new_topic_label['label']
+
+
+
+
+
+# STEP 1: EDA with Vis
+# For 4 of your most frequently occurring labels – create a word cloud of the quotes.
+
+# Generate four different lists to be used to generate the wordclouds
+textlist = sample.loc[sample['new_label']=='love']
+textlist = sample.loc[sample['new_label']=='inspirational']
+textlist = sample.loc[sample['new_label']=='humor']
+textlist = sample.loc[sample['new_label']=='poetry']
+
+
+# Remove all stopwords - Stopwords also include our label words 
+stop = stopwords.words('english') + ['quote', 'quotes', 'love', 'inspirational', 'humor', 'poetry', 'label', 'author']
+sample['quote'] = sample['quote'].apply(lambda x: ' '.join([word for word in x.split() if word not in (stop)]))
+
+
+textlist = textlist['quote'].tolist()
+text = " ".join(word for word in textlist)
+wordcloud = WordCloud(background_color="white").generate(text)
+plt.figure( figsize=(15,10))
+plt.imshow(wordcloud, interpolation='bilinear') 
+plt.axis("off")
+plt.show()
+
+# Use a bar chart to show the labels and to show label balance. If after you do this you decide to update your labels, create and add on the new word cloud and note that you updated.
+X = sample.groupby(['new_label'])['new_label'].count()
+sns.barplot(x=X.index,y=X)
+
+# For 4 of your most frequently occurring authors– create a word cloud of the quotes.
+#The top 4 authors are
+#'Lailah Gifty Akita'
+#'Debasish Mridha'
+#'Sunday Adelaja'
+#'Matshona Dhliwayo'
+
+textlist = sample.loc[sample['new_author']=='Lailah Gifty Akita']
+textlist = sample.loc[sample['new_author']=='Debasish Mridha']
+textlist = sample.loc[sample['new_author']=='Sunday Adelaja']
+textlist = sample.loc[sample['new_author']=='Matshona Dhliwayo']
+
+textlist = textlist['quote'].tolist()
+text = " ".join(word for word in textlist)
+wordcloud = WordCloud(background_color="white").generate(text)
+plt.figure( figsize=(15,10))
+plt.imshow(wordcloud, interpolation='bilinear') 
+plt.axis("off")
+plt.show()
+
+
+
+# Use a bar chart to show the authors (up to 15) and to show label balance.
+temp_sample = sample[sample.new_author!='Lailah Gifty Akita']
+temp_sample = temp_sample[sample.new_author!='Debasish Mridha']
+temp_sample = temp_sample[sample.new_author!='Sunday Adelaja']
+temp_sample = temp_sample[sample.new_author!='nan']
+Y = temp_sample.groupby(['new_author'])['new_author'].count().sort_values(ascending=False).head(15)
+sns.barplot(x=Y.index,y=Y)
+plt.xticks(rotation=90)
+
+
+
+
+
+
+
+##########################################################################
+############################ NAIVE BAYES #################################
+##########################################################################
+
+######################### LABEL PREDICTION ##############################
+
+# For both the models subset the appropriate columns
+# Since LDA generated labels only for the first 5000, sample needs to be subsetted again
+sample_s = sample.head(5000)
+data_a_l = sample_s[['quote','new_label','new_author']]
+data_l = sample_s[['quote','new_label']]
+
+############## MultiNomial NB for Label Prediction 
+vectorizer = CountVectorizer(input="content",lowercase=True,max_features=5000)          # Initiate Count Vectorizer object
+content_list = data_l['quote'].tolist() # Convert dataframe column to a list
+vec_matrix = vectorizer.fit_transform(content_list)
+vec_array = vec_matrix.toarray()
+data_l_cv = pd.DataFrame(vec_array, columns=vectorizer.get_feature_names_out())
+data_l_cv=data_l_cv.fillna(0)
+#data_l_cv.insert(0,'label',data_a_l['new_label'])
+#data_l_cv.insert(1,'author',data_a_l['new_author'])
+
+# Now the dataframe is ready, split into test/train
+X_train, X_test, y_train, y_test = train_test_split(data_l_cv,data_l['new_label'],random_state=36,test_size=0.25, shuffle=False)
+# Instantiate Multinomial NB
+MyModelNB_l= MultinomialNB()
+# Fit the trained model
+MyModelNB_l.fit(X_train, y_train)
+# Predict using the fitted model
+Prediction_l = MyModelNB_l.predict(X_test)
+# Build a confusion matrix
+cnf_matrix_l = confusion_matrix(y_test, Prediction_l)
+# Creating a dataframe for a array-formatted Confusion matrix,so it will be easy for plotting.
+cm_df = pd.DataFrame(cnf_matrix_l,
+                     index = ['love','inspirational','humor', 'poetry'], 
+                     columns = ['love','inspirational','humor', 'poetry'])
+#Plotting the confusion matrix
+# https://www.analyticsvidhya.com/blog/2021/06/confusion-matrix-for-multi-class-classification/
+plt.figure(figsize=(5,4))
+sns.heatmap(cm_df, annot=True)
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+accuracy_score(y_test,Prediction_l)
+
+
+############################## AUTHOR Prediction ###########################
+data_a = sample_s[['quote','new_author']]
+#good_authors = ['Billy Graham','Matshona Dhliwayo', 'Mehmet Murat ildan', 'William Shakespeare']
+good_authors = ['Lailah Gifty Akita','Debasish Mridha', 'Sunday Adelaja', 'Billy Graham']
+data_a_2 = data_a[data_a['new_author'].isin(good_authors)]
+
+vectorizer = CountVectorizer(input="content",lowercase=True,max_features=5000)          # Initiate Count Vectorizer object
+content_list = data_a_2['quote'].tolist() # Convert dataframe column to a list
+vec_matrix = vectorizer.fit_transform(content_list)
+vec_array = vec_matrix.toarray()
+data_a_cv = pd.DataFrame(vec_array, columns=vectorizer.get_feature_names_out())
+data_a_cv=data_a_cv.fillna(0)
+#data_l_cv.insert(0,'label',data_a_l['new_label'])
+#data_l_cv.insert(1,'author',data_a_l['new_author'])
+
+# Now the dataframe is ready, split into test/train
+X_train, X_test, y_train, y_test = train_test_split(data_a_cv,data_a_2['new_author'],random_state=36,test_size=0.25, shuffle=False)
+# Instantiate Multinomial NB
+MyModelNB_l= MultinomialNB()
+# Fit the trained model
+MyModelNB_l.fit(X_train, y_train)
+# Predict using the fitted model
+Prediction_l = MyModelNB_l.predict(X_test)
+# Build a confusion matrix
+cnf_matrix_l = confusion_matrix(y_test, Prediction_l)
+# Creating a dataframe for a array-formatted Confusion matrix,so it will be easy for plotting.
+cm_df = pd.DataFrame(cnf_matrix_l,
+                     index = ['Akita','Mridha','Adelaja', 'Graham'], 
+                     columns = ['Akita','Mridha','Adelaja', 'Graham'])
+#Plotting the confusion matrix
+# https://www.analyticsvidhya.com/blog/2021/06/confusion-matrix-for-multi-class-classification/
+plt.figure(figsize=(5,4))
+sns.heatmap(cm_df, annot=True)
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+# Accuracy
+accuracy_score(y_test,Prediction_l)
+
+
+
+
+
+
+##########################################################################
+############################ DECISION TREE ###############################
+##########################################################################
+
+######################### LABEL PREDICTION ##############################
+
+vectorizer = CountVectorizer(input="content",lowercase=True,max_features=5000)          # Initiate Count Vectorizer object
+content_list = data_l['quote'].tolist() # Convert dataframe column to a list
+vec_matrix = vectorizer.fit_transform(content_list)
+vec_array = vec_matrix.toarray()
+data_l_cv = pd.DataFrame(vec_array, columns=vectorizer.get_feature_names_out())
+data_l_cv=data_l_cv.fillna(0)
+#data_l_cv.insert(0,'label',data_a_l['new_label'])
+#data_l_cv.insert(1,'author',data_a_l['new_author'])
+
+# Now the dataframe is ready, split into test/train
+X_train, X_test, y_train, y_test = train_test_split(data_l_cv,data_l['new_label'],random_state=36,test_size=0.25, shuffle=False)
+# Instantiate the decision tree
+MyDT=DecisionTreeClassifier(criterion='gini',splitter='best', max_depth=4, random_state=0)
+# Fit the training data to the model
+MyDT.fit(X_train, y_train)
+# Plot the tree in a simple way
+tree.plot_tree(MyDT)
+# Run the test data over this model
+DT_pred=MyDT.predict(X_test)
+# Build a confusion matrix
+bn_matrix = confusion_matrix(y_test, DT_pred)
+
+cm_df = pd.DataFrame(bn_matrix,
+                     index = ['love','inspirational','humor', 'poetry'], 
+                     columns = ['love','inspirational','humor', 'poetry'])
+
+#Plotting the confusion matrix
+# https://www.analyticsvidhya.com/blog/2021/06/confusion-matrix-for-multi-class-classification/
+plt.figure(figsize=(5,4))
+sns.heatmap(cm_df, annot=True)
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+# Accuracy
+accuracy_score(y_test,DT_pred)
+
+############################## AUTHOR Prediction ###########################
+
+# Now the dataframe is ready, split into test/train
+X_train, X_test, y_train, y_test = train_test_split(data_a_cv,data_a_2['new_author'],random_state=36,test_size=0.25, shuffle=False)
+
+MyDT=DecisionTreeClassifier(criterion='gini',splitter='best', max_depth=4, random_state=0)
+# Fit the training data to the model
+MyDT.fit(X_train, y_train)
+# Plot the tree in a simple way
+tree.plot_tree(MyDT)
+# Run the test data over this model
+DT_pred=MyDT.predict(X_test)
+# Build a confusion matrix
+bn_matrix = confusion_matrix(y_test, DT_pred)
+# Creating a dataframe for a array-formatted Confusion matrix,so it will be easy for plotting.
+cm_df = pd.DataFrame(bn_matrix,
+                     index = ['Akita','Mridha','Adelaja', 'Graham'], 
+                     columns = ['Akita','Mridha','Adelaja', 'Graham'])
+#Plotting the confusion matrix
+# https://www.analyticsvidhya.com/blog/2021/06/confusion-matrix-for-multi-class-classification/
+plt.figure(figsize=(5,4))
+sns.heatmap(cm_df, annot=True)
+plt.title('Confusion Matrix')
+plt.ylabel('Actal Values')
+plt.xlabel('Predicted Values')
+plt.show()
+
+# Accuracy
+accuracy_score(y_test,DT_pred)
